@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Respirar y Soltar (EP3) - Funcion serverless fn-confirmacion-cita (AWS Lambda, Java 21).
+  Consume la cola SQS rys-citas-eventos (event source mapping con respuesta parcial por lote),
+  notifica al paciente via API Gateway -> ms-notificaciones y guarda el comprobante en S3.
+
+Parameters:
+  Proyecto:
+    Type: String
+    Default: rys
+  CodigoBucket:
+    Type: String
+    Description: Bucket S3 con el jar (rys-artefactos-<cuenta>)
+  CodigoKey:
+    Type: String
+    Description: Ruta del jar en el bucket (fn-confirmacion-cita/<commit>.jar)
+  ApiKeyValor:
+    Type: String
+    NoEcho: true
+    Description: Valor de la API key rys-fn-confirmacion-cita del API Gateway
+  RolLambda:
+    Type: String
+    Default: LabRole
+    Description: Rol de ejecucion (en AWS Academy no se pueden crear roles; se usa LabRole)
+
+Resources:
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${Proyecto}-fn-confirmacion-cita"
+      RetentionInDays: 14
+
+  Funcion:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Proyecto}-fn-confirmacion-cita"
+      Description: Confirma citas de forma asincrona (comprobante en S3 + notificacion al paciente)
+      Runtime: java21
+      Architectures: [x86_64]
+      Handler: cl.respirarysoltar.confirmacion.ConfirmacionCitaHandler::handleRequest
+      Code:
+        S3Bucket: !Ref CodigoBucket
+        S3Key: !Ref CodigoKey
+      Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/${RolLambda}"
+      MemorySize: 512
+      Timeout: 20                       # la cola usa visibilidad de 120 s (>= 6 x 20 s)
+      LoggingConfig:
+        LogGroup: !Ref Logs
+      Environment:
+        Variables:
+          API_URL: !ImportValue
+            Fn::Sub: "${Proyecto}-api-url"
+          API_KEY: !Ref ApiKeyValor
+          BUCKET_COMPROBANTES: !ImportValue
+            Fn::Sub: "${Proyecto}-bucket-comprobantes"
+          # Arranque en frio mas rapido: la funcion es corta, no necesita el compilador C2
+          JAVA_TOOL_OPTIONS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
+      Tags:
+        - {Key: Proyecto, Value: !Ref Proyecto}
+
+  # Disparador: la Lambda lee la cola en lotes de hasta 5 mensajes
+  DisparadorCola:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref Funcion
+      EventSourceArn: !ImportValue
+        Fn::Sub: "${Proyecto}-cola-citas-arn"
+      BatchSize: 5
+      MaximumBatchingWindowInSeconds: 1
+      FunctionResponseTypes: [ReportBatchItemFailures]   # solo reintenta los mensajes que fallaron
+      ScalingConfig:
+        MaximumConcurrency: 5            # protege al backend: como maximo 5 Lambdas en paralelo
+      Enabled: true
+
+  # Alarma: cualquier mensaje en la DLQ indica una confirmacion que no se pudo entregar
+  AlarmaDlq:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Proyecto}-citas-eventos-dlq-con-mensajes"
+      AlarmDescription: Hay eventos de citas que fallaron 3 veces y quedaron en la DLQ
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - {Name: QueueName, Value: !Sub "${Proyecto}-citas-eventos-dlq"}
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  FuncionNombre:
+    Value: !Ref Funcion
+  FuncionArn:
+    Value: !GetAtt Funcion.Arn
