@@ -1,0 +1,11 @@
+{
+  "eventoId": "11111111-2222-3333-4444-555555555555",
+  "tipo": "CITA_RESERVADA",
+  "citaId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "pacienteId": "REEMPLAZAR-POR-UN-ID-DE-PACIENTE",
+  "psicologoId": "REEMPLAZAR-POR-UN-ID-DE-PSICOLOGO",
+  "horario": "2026-12-03T10:30:00",
+  "horarioAnterior": null,
+  "motivo": null,
+  "ocurridoEn": "2026-11-22T22:00:00Z"
+}
