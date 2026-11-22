@@ -1,0 +1,9 @@
+{
+  "Records": [
+    {
+      "messageId": "ejemplo-invalido-1",
+      "body": "{\"tipo\":\"CITA_RESERVADA\"}",
+      "attributes": {"ApproximateReceiveCount": "1"}
+    }
+  ]
+}

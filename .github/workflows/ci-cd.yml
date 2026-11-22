@@ -1,0 +1,86 @@
+# Pipeline CI/CD de la función serverless fn-confirmacion-cita (EP3, IE4/IE10)
+#   1. build-test → pruebas unitarias + jar de despliegue (maven-shade)
+#   2. desplegar  → sube el jar a S3 y actualiza la Lambda y su disparador SQS con CloudFormation
+#   3. verificar  → invoca la función con un lote vacío y con un evento de prueba inválido
+name: CI/CD fn-confirmacion-cita
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore: ["**.md"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-test:
+    name: 1 · Build y pruebas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B -ntp verify
+      - name: Resumen de pruebas
+        if: always()
+        run: grep -h "Tests run" target/surefire-reports/*.txt | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paquete-lambda
+          path: target/fn-confirmacion-cita-1.0.0.jar
+          retention-days: 7
+
+  desplegar:
+    name: 2 · Despliegue en AWS Lambda
+    needs: build-test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: produccion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: paquete-lambda
+          path: target
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: S3 + CloudFormation (función, disparador SQS, logs y alarma de DLQ)
+        run: SIN_BUILD=1 VERSION="${GITHUB_SHA::7}" ./scripts/desplegar.sh
+
+  verificar:
+    name: 3 · Prueba de humo
+    needs: desplegar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Invocar la función
+        run: |
+          echo '{"Records":[]}' > vacio.json
+          aws lambda invoke --function-name rys-fn-confirmacion-cita --cli-binary-format raw-in-base64-out \
+            --payload file://vacio.json respuesta.json >/dev/null
+          echo "Lote vacío → $(cat respuesta.json)"
+          grep -q '"batchItemFailures":\[\]' respuesta.json
+          echo '{"Records":[{"messageId":"prueba-pipeline","body":"{}"}]}' > invalido.json
+          aws lambda invoke --function-name rys-fn-confirmacion-cita --cli-binary-format raw-in-base64-out \
+            --payload file://invalido.json respuesta.json >/dev/null
+          echo "Evento inválido → $(cat respuesta.json)"
+          grep -q 'prueba-pipeline' respuesta.json
+          echo "✅ fn-confirmacion-cita responde y rechaza eventos inválidos (vuelven a la cola)" >> "$GITHUB_STEP_SUMMARY"
