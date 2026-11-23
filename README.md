@@ -17,7 +17,7 @@ a esperar (o fallar) si el envío está lento o caído. Por eso:
    - guarda el comprobante HTML en `s3://rys-comprobantes-<cuenta>/comprobantes/<citaId>/<tipo>-<eventoId>.html`.
 
 ```
-ms-agenda ──SendMessage──► SQS rys-citas-eventos ──(lotes de 5)──► Lambda fn-confirmacion-cita
+ms-agenda ──SendMessage──► SQS rys-citas-eventos ──(lotes de hasta 5)──► Lambda fn-confirmacion-cita
                                  │ 3 intentos fallidos                 │            │
                                  ▼                                     ▼            ▼
                         SQS rys-citas-eventos-dlq            API Gateway → ms-*   Amazon S3
@@ -32,6 +32,7 @@ ms-agenda ──SendMessage──► SQS rys-citas-eventos ──(lotes de 5)─
 | **Idempotencia** (SQS entrega "al menos una vez") | Si el comprobante del `eventoId` ya existe en S3, el mensaje se descarta sin notificar de nuevo |
 | **Respuesta parcial por lote** (`ReportBatchItemFailures`) | Solo los mensajes que fallan vuelven a la cola |
 | Reintentos + **DLQ** | 3 intentos (`maxReceiveCount`) y luego `rys-citas-eventos-dlq` (14 días) con alarma de CloudWatch |
+| Latencia baja | Sin ventana de agrupación: medido en AWS, la Lambda toma el mensaje en 4–7 s (con ventana de 1 s tardaba 20–26 s) |
 | Concurrencia acotada | `ScalingConfig.MaximumConcurrency: 5` protege al backend de picos |
 | Arranque en frío reducido | Clientes creados una vez y reutilizados; cliente HTTP liviano; `TieredStopAtLevel=1` |
 | Sin secretos en el código | `API_KEY`, `API_URL` y `BUCKET_COMPROBANTES` llegan como variables de entorno desde CloudFormation |
@@ -71,7 +72,7 @@ por el repositorio de infraestructura.
 | Runtime / handler | `java21` · `cl.respirarysoltar.confirmacion.ConfirmacionCitaHandler::handleRequest` |
 | Memoria / timeout | 512 MB · 20 s (la cola tiene visibilidad de 120 s, ≥ 6 × timeout) |
 | Rol | `LabRole` (AWS Academy no permite crear roles) |
-| Disparador | SQS `rys-citas-eventos`, lote 5, ventana 1 s, concurrencia máx. 5 |
+| Disparador | SQS `rys-citas-eventos`, lote 5, sin ventana de agrupación, concurrencia máx. 5 |
 
 ## Probar la función desplegada
 
